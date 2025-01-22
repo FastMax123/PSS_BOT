@@ -1,80 +1,46 @@
 import os
 import pdfplumber
 import pandas as pd
-import re
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+from telegram.ext import Updater
+from pdf_to_excel2 import process_pdf  # импортируем функцию для обработки PDF
 
-# Функция для извлечения данных из PDF
-def extract_relevant_data_from_pdf(pdf_file_path):
-    results = []
+# Токен вашего бота
+TOKEN = '7939209383:AAGLF2H2ZqG8S_aTHOKbNOKw3NDUNbV2DU8'
 
-    with pdfplumber.open(pdf_file_path) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    price_candidates = [cell for cell in row if re.search(r'\d{2,}', str(cell).replace(" ", ""))]
-                    if price_candidates:
-                        price_per_unit = price_candidates[-1]
-                        quantity = next((cell for cell in row if str(cell).isdigit()), None)
-                        unit = next((cell for cell in row if isinstance(cell, str) and len(cell) <= 3), None)
-                        name = next((cell for cell in row if isinstance(cell, str) and len(cell) > 3), None)
+# Создаем приложение
+application = Application.builder().token(TOKEN).build()
 
-                        total = None
-                        if quantity and price_per_unit:
-                            try:
-                                total = int(str(quantity).replace(" ", "")) * float(str(price_per_unit).replace(" ", "").replace(",", "."))
-                            except ValueError:
-                                total = None
+# Функция для начала работы с ботом
+async def start(update: Update, context: CallbackContext):
+    user = update.effective_user
+    await update.message.reply_html(
+        f'Привет, {user.mention_html()}! Отправь мне PDF файл, и я помогу тебе его обработать.',
+    )
 
-                        if name and quantity and price_per_unit:
-                            results.append({
-                                "Наименование": name,
-                                "Кол-во": quantity,
-                                "Ед. изм.": unit,
-                                "Цена за ед.": price_per_unit,
-                                "Итого": total
-                            })
-
-    df = pd.DataFrame(results)
-    df = df.dropna(subset=["Наименование", "Кол-во", "Цена за ед."])
-
-    # Сохраняем данные в формате CSV или возвращаем таблицу как строку
-    return df.to_string(index=False)
-
-# Обработчик команды /start
-def start(update: Update, context: CallbackContext):
-    keyboard = [[{"text": "Загрузить ПДФ"}]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
-    update.message.reply_text("Добро пожаловать! Нажмите кнопку ниже для загрузки PDF.", reply_markup=reply_markup)
-
-# Обработчик получения файла PDF
-def handle_pdf(update: Update, context: CallbackContext):
+# Функция для обработки PDF
+async def handle_pdf(update: Update, context: CallbackContext):
     file = update.message.document
-    file_path = f"./{file.file_name}"
+    file_id = file.file_id
+    new_file = await context.bot.get_file(file_id)
+    file_path = 'temp.pdf'
+    await new_file.download_to_drive(file_path)
 
-    # Скачиваем файл на сервер
-    file.download(file_path)
+    # Обработка PDF через функцию из другого файла
+    try:
+        df = process_pdf(file_path)  # обработка PDF и создание DataFrame
+        excel_file = "output.xlsx"
+        df.to_excel(excel_file, index=False)  # Сохраняем в Excel
+        await update.message.reply_document(document=open(excel_file, 'rb'))
+        os.remove(file_path)  # удаляем временный PDF файл
+        os.remove(excel_file)  # удаляем Excel файл
+    except Exception as e:
+        await update.message.reply_text(f"Произошла ошибка: {str(e)}")
 
-    # Обрабатываем PDF и извлекаем данные
-    result = extract_relevant_data_from_pdf(file_path)
+# Добавление обработчиков команд
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
 
-    # Отправляем результат обратно пользователю
-    update.message.reply_text("Вот обработанные данные из вашего PDF:\n\n" + result)
-
-# Основная функция для запуска бота
-def main():
-    updater = Updater("7939209383:AAGLF2H2ZqG8S_aTHOKbNOKw3NDUNbV2DU8", use_context=True)  # Добавлен ваш токен
-    dispatcher = updater.dispatcher
-
-    # Обработчики команд
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(MessageHandler(Filters.document.mime_type("application/pdf"), handle_pdf))
-
-    # Запускаем бота
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
+# Запуск бота
+application.run_polling()
